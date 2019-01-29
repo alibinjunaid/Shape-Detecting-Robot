@@ -1,0 +1,559 @@
+
+package alpha;
+
+import java.awt.geom.Point2D;
+import java.text.DecimalFormat;
+import java.util.ArrayList;
+import java.util.Collections;
+
+import lejos.hardware.Button;
+import lejos.hardware.ev3.LocalEV3;
+import lejos.hardware.motor.EV3LargeRegulatedMotor;
+import lejos.hardware.port.MotorPort;
+import lejos.hardware.port.Port;
+import lejos.hardware.sensor.EV3ColorSensor;
+import lejos.robotics.RegulatedMotor;
+import lejos.robotics.SampleProvider;
+import lejos.utility.Delay;
+
+public class project1 {
+
+static boolean running = true, xReached = false, yReached = false;
+static double desired_x = 0, desired_y = 0;
+static EV3ColorSensor colorSensor;
+static SampleProvider sampleProvider;
+static float[] colorSample;
+static float[] rgb_array;
+static RegulatedMotor rover = new EV3LargeRegulatedMotor(MotorPort.C);
+static RegulatedMotor assembly = new EV3LargeRegulatedMotor(MotorPort.A);
+static int move = 0;
+static int y_angle = -10;
+static int object_detected = 0;
+static double summ = 0;
+static double avgDistance = 0;
+public static final int INITIALIZING = 0, SCANNING = 1, ORIGINATING = 2, RECOGNIZING = 3, VALIDATING = 4, END = 5,
+IDLE = 6;
+public static int current_state = INITIALIZING;
+public static ArrayList<Point2D> points = new ArrayList<>();
+public static ArrayList<Point2D> sortedPoints1 = new ArrayList<>();
+public static ArrayList<Point2D> sortedPoints2 = new ArrayList<>();
+public static final float threshold_std = 3.0f;
+public static int current_COLOR = 0, previous_COLOR = 0;
+public static int y = 0;
+
+public static void main(String[] args) {
+rover.setSpeed(90);
+assembly.setSpeed(75);
+Port s1 = LocalEV3.get().getPort("S1");
+colorSensor = new EV3ColorSensor(s1);
+sampleProvider = colorSensor.getRGBMode();
+colorSample = new float[sampleProvider.sampleSize()];
+// Delay.msDelay(1000);
+
+Thread mainThread = new Thread(new Runnable() {
+@Override
+public void run() {
+while (running) {
+if (current_state == project1.INITIALIZING) {
+initialize();
+} else if (current_state == project1.SCANNING) {
+scan();
+} else if (current_state == project1.ORIGINATING) {
+originate();
+} else if (current_state == project1.RECOGNIZING) {
+recognise();
+} else if (current_state == project1.VALIDATING) {
+validate();
+} else if (current_state == project1.END) {
+originate_end();
+} else if (current_state == project1.IDLE) {
+end();
+}
+}
+}
+}, "Move_Thread");
+mainThread.start();
+
+Thread pointReg = new Thread(new Runnable() {
+@Override
+public void run() {
+while (running) {
+if (current_state == project1.SCANNING) {
+pointReg();
+}
+}
+}
+}, "Point_Reg");
+pointReg.start();
+
+Button.waitForAnyPress();
+}
+
+// ## Initializing the robot ## //
+private static void initialize() {
+if (current_state == project1.INITIALIZING) {
+sampleProvider.fetchSample(colorSample, 0);
+rgb_array = new float[] { colorSample[0], colorSample[1], colorSample[2] };
+while (color(rgb_array) != 1) {
+rover.backward();
+sampleProvider.fetchSample(colorSample, 0);
+rgb_array = new float[] { colorSample[0], colorSample[1], colorSample[2] };
+}
+rover.rotate(-50);
+rover.stop();
+assembly.resetTachoCount();
+rover.resetTachoCount();
+y = 0;
+// points.add(new Point2D.Double(Math.abs(assembly.getTachoCount()),
+// Math.abs(y)));
+current_state = SCANNING;
+}
+}
+
+// ## Performing grid based scanning ## //
+private static void scan() {
+if (current_state == project1.SCANNING) {
+if (((y / 30) % 2) == 0) {
+assembly.rotate(-800);
+y += 30;
+} else {
+assembly.rotate(800);
+y += 30;
+}
+rover.rotate(-30);
+}
+}
+
+// ## Point registration ## //
+public static void pointReg() {
+if (current_state == project1.SCANNING) {
+try {
+sampleProvider.fetchSample(colorSample, 0);
+rgb_array = new float[] { colorSample[0], colorSample[1], colorSample[2] };
+current_COLOR = color(rgb_array);
+if (current_COLOR != previous_COLOR) {
+points.add(new Point2D.Double(Math.abs(assembly.getTachoCount()), Math.abs(y)));
+System.out.println(points.size() + ": " + points.get(points.size() - 1).getX() + ", "
++ points.get(points.size() - 1).getY());
+}
+previous_COLOR = current_COLOR;
+// System.out.println((y - points.get(points.size() - 1).getY()));
+if (((y - points.get(points.size() - 1).getY()) > 30) && points.size() > 1) {
+current_state = project1.ORIGINATING;
+}
+Delay.msDelay(10);
+} catch (Exception e) {
+}
+}
+}
+
+// ## Going back to left origin ## //
+public static void originate() {
+if (current_state == project1.ORIGINATING) {
+while (assembly.getTachoCount() <= -50) {
+assembly.rotate(50);
+}
+current_state = project1.VALIDATING;
+}
+}
+
+public static void originate_end() {
+if (current_state == project1.END) {
+while (assembly.getTachoCount() <= -50) {
+assembly.rotate(65);
+}
+current_state = project1.IDLE;
+}
+}
+
+public static void end() {
+if (current_state == project1.IDLE) {
+if (Button.ESCAPE.isDown()) {
+System.exit(0);
+}
+}
+}
+
+// ## Validating the detected shape ## //
+public static void validate() {
+if (current_state == project1.VALIDATING) {
+rover.setSpeed(165);
+assembly.setSpeed(150);
+
+ArrayList<Point2D> sortedPoints_1 = new ArrayList<>();
+ArrayList<Point2D> sortedPoints_2 = new ArrayList<>();
+
+int count1 = 1;
+boolean addLeft = true;
+
+for (int i = 1; i < points.size(); i++) {
+if (count1 <= 1) {
+if (addLeft) {
+sortedPoints_1.add(points.get(i));
+} else {
+sortedPoints_2.add(points.get(i));
+}
+count1++;
+}
+if (count1 > 1) {
+count1 = 0;
+addLeft = !addLeft;
+}
+}
+sortedPoints1.addAll(sortedPoints_1);
+Collections.reverse(sortedPoints_2);
+sortedPoints2.addAll(sortedPoints_2);
+
+sortedPoints_1.addAll(sortedPoints_2);
+sortedPoints_1.add(0, points.get(0));
+sortedPoints_1.add(points.get(1));
+
+for (int i = 0; i < sortedPoints_1.size(); i++) {
+double diff_x = sortedPoints_1.get(i).getX() + assembly.getTachoCount();
+double diff_y = sortedPoints_1.get(i).getY() + rover.getTachoCount();
+assembly.rotate((int) -diff_x);
+rover.rotate((int) -diff_y);
+}
+
+current_state = project1.RECOGNIZING;
+}
+}
+
+// ## Recognizing the detected shape ## //
+public static void recognise() {
+if (current_state == project1.RECOGNIZING) {
+// Clear the first origin point
+detectShape(points);
+current_state = project1.END;
+}
+}
+
+// ## Find the standard deviation of the rgb values ## //
+public static float std(float[] array) {
+float sum = 0;
+float mean = 0;
+for (int i = 0; i < array.length; i++) {
+sum += array[i];
+}
+mean = sum / array.length;
+sum = 0;
+for (int i = 0; i < array.length; i++) {
+sum += Math.pow((array[i] - mean), 2);
+}
+return (float) (Math.sqrt(sum) / (array.length - 1));
+}
+
+public static boolean detectShape(ArrayList<Point2D> points) {
+
+ArrayList<Point2D> sortedPoints3 = new ArrayList<>();
+ArrayList<Point2D> sortedPoints_angle = new ArrayList<>();
+ArrayList<Point2D> avgsortedPoints1 = new ArrayList<>();
+ArrayList<Point2D> avgsortedPoints2 = new ArrayList<>();
+ArrayList<Point2D> sortedPoints = new ArrayList<>();
+ArrayList<Point2D> sortedPointsfor_avg = new ArrayList<>();
+ArrayList<Double> sortedPoints_right = new ArrayList<>();
+ArrayList<Double> sortedPoints_left = new ArrayList<>();
+
+avgsortedPoints1.addAll(sortedPoints1);
+avgsortedPoints2.addAll(sortedPoints2);
+sortedPoints3.addAll(avgsortedPoints1);
+sortedPoints3.addAll(avgsortedPoints2);
+
+for (int i = 0; i < avgsortedPoints1.size() - 1; i++) {
+double diff = (avgsortedPoints1.get(i + 1).getX() - avgsortedPoints1.get(i).getX());
+double avg_diff = diff / 2;
+double avg_added = avgsortedPoints1.get(i).getX() + avg_diff;
+sortedPoints.add(new Point2D.Double(avg_added, avgsortedPoints1.get(i).getY()));
+sortedPoints_right.add(avg_added);
+}
+sortedPoints.add(avgsortedPoints1.get(avgsortedPoints1.size() - 1));
+
+for (int i = 0; i < avgsortedPoints2.size() - 1; i++) {
+double diff = avgsortedPoints2.get(i + 1).getX() - avgsortedPoints2.get(i).getX();
+double avg_diff = diff / 2;
+double avg_added = avgsortedPoints2.get(i).getX() + avg_diff;
+sortedPoints.add(new Point2D.Double(avg_added, avgsortedPoints2.get(i).getY()));
+sortedPoints_left.add(avg_added);
+}
+sortedPoints.add(avgsortedPoints2.get(avgsortedPoints2.size() - 1));
+sortedPointsfor_avg.addAll(sortedPoints);
+sortedPoints_angle.addAll(sortedPoints);
+
+
+DecimalFormat numberFormat = new DecimalFormat("#.00");
+/*
+for (int i = 0; i < sortedPoints_left.size(); i++) {
+System.out.println(numberFormat.format(sortedPoints_left.get(i)) +
+"--" + numberFormat.format(sortedPoints_right.get(i)));
+Delay.msDelay(2000); }
+*/
+ArrayList<Double> slope = new ArrayList<>();
+ArrayList<Double> angle = new ArrayList<>();
+
+// sortedPoints_angle.add(0, points.get(1));
+// # # Find angles of the boundary points # #
+for (int i = 0; i < sortedPoints_angle.size() - 1; i++) {
+double x1 = sortedPoints_angle.get(i).getX();
+double x2 = sortedPoints_angle.get(i + 1).getX();
+double y1 = sortedPoints_angle.get(i).getY();
+double y2 = sortedPoints_angle.get(i + 1).getY();
+slope.add(slope(x1, y1, x2, y2));
+}
+slope.add(slope(sortedPoints_angle.get(0).getX(), sortedPoints_angle.get(0).getY(), 
+sortedPoints_angle.get(sortedPoints_angle.size()-1).getX(),
+sortedPoints_angle.get(sortedPoints_angle.size()-1).getY()));
+for (int i = 0; i < slope.size() - 1; i++) {
+double m1 = slope.get(i);
+double m2 = slope.get(i + 1);
+if(tangent(m1, m2) > 20) {
+angle.add(tangent(m1, m2));
+}
+}
+angle.add(tangent_single(slope.get(0)));
+//angle.add(tangent(slope.get(slope.size()-1), slope.get(0)));
+
+//angle.add((tangent_single(slope.get(slope.size()-1))));
+
+double sum_angle = 0;
+for (int i = 0; i < angle.size() - 1; i++) {
+sum_angle += angle.get(i);
+}
+
+//System.out.println("Angle:" + " " + sum_angle);
+
+
+if (devWithinLimit(subArray(sortedPoints_left, 0, (sortedPoints_left.size()-2)), 10) 
+&& devWithinLimit(subArray(sortedPoints_right, 0, (sortedPoints_right.size()-2)), 10)) {
+System.out.println("It's a SQUARE!");
+}
+else if (sum_angle > 520) {
+System.out.println("It's a PLUS!");
+} else if (sum_angle < 520 && sum_angle > 350) {
+System.out.println("It's a SQUARE!");
+} else if (sum_angle < 350) {
+// Calculate maximum distance for each point
+ArrayList<Double> distances = new ArrayList<>();
+for (int i = 0; i < sortedPoints3.size(); i++) {
+double maxDist = 0;
+for (int j = 0; j < sortedPoints3.size(); j++) {
+double dist = distance(sortedPoints3.get(i).getX(), sortedPoints3.get(i).getY(),
+sortedPoints3.get(j).getX(), sortedPoints3.get(j).getY());
+if (dist >= maxDist) {
+maxDist = dist;
+}
+}
+distances.add(maxDist);
+}
+// Get the points that result in the maximum distance
+
+double maxDist = 0;
+for (int i = 0; i < distances.size()-1; i++) {
+if (distances.get(i) >= maxDist) {
+maxDist = distances.get(i);
+}
+}
+
+Point2D point1 = null;
+Point2D point2 = null;
+
+for (int i = 0; i < distances.size(); i++) {
+if (distances.get(i) == maxDist) {
+if (point1 == null) {
+point1 = sortedPoints3.get(i);
+} else {
+point2 = sortedPoints3.get(i);
+}
+}
+}
+
+// Find the circle center point
+double centerX = (point1.getX() + point2.getX()) / 2;
+double centerY = (point1.getY() + point2.getY()) / 2;
+Point2D centerPoint = new Point2D.Double(centerX, centerY);
+
+//System.out.println("CenterX:" + centerX + "--" + "CenterY:" + centerY);
+
+ArrayList<Double> dist_circle = new ArrayList<>();
+
+// sortedPoints_angle.add(0, points.get(1));
+// # # Find angles of the boundary points # #
+for (int i = 0; i < sortedPoints3.size() - 1; i++) {
+double x2 = sortedPoints3.get(i).getX();
+double y2 = sortedPoints3.get(i).getY();
+double m = slope(centerPoint.getX(), centerPoint.getY(), x2, y2);
+if(tangent_single(m) > 35){
+double dist = distance(centerPoint.getX(), centerPoint.getY(),
+sortedPoints3.get(i).getX(), sortedPoints3.get(i).getY());
+dist_circle.add(dist);
+}
+}
+Collections.sort(dist_circle);
+Collections.reverse(dist_circle);
+
+// DecimalFormat numberFormat = new DecimalFormat("#.00");
+/*
+for (int i = 0; i < dist_circle.size()-1; i++) {
+System.out.println(numberFormat.format(dist_circle.get(i)));
+Delay.msDelay(1000); }
+*/ 
+if (devWithinLimit(subArray(dist_circle, 0, dist_circle.size()-1), 20)) {
+System.out.println("It's a SEMICIRCLE!");
+}
+else {
+System.out.println("It's a TRIANGLE!");
+}
+}
+/*
+sortedPoints3.remove(1);
+sortedPoints3.remove(1);
+sortedPoints3.remove(sortedPoints3.size() - 1);
+sortedPoints3.remove(sortedPoints3.size() - 1);
+double max_Y = 0;
+int del_index = 0;
+for (int i = 0; i < sortedPoints3.size(); i++) {
+if (sortedPoints3.get(i).getY() >= max_Y) {
+max_Y = sortedPoints3.get(i).getY();
+del_index = i;
+}
+}
+sortedPoints3.remove(del_index + 1);
+sortedPoints3.remove(del_index + 1);
+sortedPoints3.remove(del_index - 2);
+sortedPoints3.remove(del_index - 3);
+
+// Calculate maximum distance for each point
+ArrayList<Double> distances = new ArrayList<>();
+for (int i = 0; i < sortedPoints3.size(); i++) {
+double maxDist = 0;
+for (int j = 0; j < sortedPoints3.size(); j++) {
+double dist = distance(sortedPoints3.get(i).getX(), sortedPoints3.get(i).getY(),
+sortedPoints3.get(j).getX(), sortedPoints3.get(j).getY());
+if (dist >= maxDist) {
+maxDist = dist;
+}
+}
+distances.add(maxDist);
+}
+
+Collections.sort(distances);
+Collections.reverse(distances);
+
+DecimalFormat numberFormat = new DecimalFormat("#.00");
+
+for (int i = 0; i < distances.size(); i++) {
+System.out.println(numberFormat.format(distances.get(i)));
+Delay.msDelay(1000); }
+
+// Check if it is a triangle
+if (devWithinLimit(subArray(distances, 0, 5), 3)) {
+System.out.println("It's a triangle!");
+}
+
+// Check if it is a semi-circle
+else if (devWithinLimit(subArray(distances, 0, 1), 2)) {
+System.out.println("It's a semi-circle!");
+}
+}
+*/
+/*
+* sortedPoints.remove(1); sortedPoints.remove(1); //sortedPoints3.remove(1);
+* //sortedPoints3.remove(2); //sortedPoints.remove(sortedPoints.size()-1);
+* 
+* double max_Y = 0; int del_index = 0; for (int i = 0; i < sortedPoints.size();
+* i++) { if(sortedPoints.get(i).getY() >= max_Y) { max_Y =
+* sortedPoints.get(i).getY(); del_index = i; // sortedPoints3.remove(i); //
+* sortedPoints3.remove(i-1); } } sortedPoints.remove(del_index+1);
+* sortedPoints.remove(del_index+1); //sortedPoints3.remove(del_index+1);
+* sortedPoints.remove(del_index-2); sortedPoints.remove(del_index-3);
+* //sortedPoints3.remove(del_index-4);
+* //sortedPoints3.remove(sortedPoints3.size()-1);
+* sortedPoints.remove(sortedPoints.size()-2);
+* sortedPoints.remove(sortedPoints.size()-2);
+*/
+
+
+return false;
+}
+
+// Check if the certain number of distances are within a given limit
+public static boolean devWithinLimit(ArrayList<Double> dists, double percLimit) {
+// First compute the average of the distances
+double avg = 0;
+for (int i = 0; i < dists.size(); i++) {
+avg += dists.get(i);
+}
+avg /= dists.size();
+
+// Then compute the deviation as the distance minus the average
+double maxDeviation = 0;
+for (int i = 0; i < dists.size(); i++) {
+double dev = dists.get(i) - avg;
+if (Math.abs(dev) >= maxDeviation) {
+maxDeviation = Math.abs(dev);
+}
+}
+
+// Then check if the maximum deviation lies within the given percentage limit
+if ((maxDeviation * 100 / avg) <= percLimit) {
+return true;
+}
+return false;
+}
+
+// Get a sub array from a given array
+public static ArrayList<Double> subArray(ArrayList<Double> array, int index1, int index2) {
+ArrayList<Double> subList = new ArrayList<>();
+for (int i = index1; i < index2 + 1; i++) {
+subList.add(array.get(i));
+}
+return subList;
+}
+
+public static double distance(double x1, double y1, double x2, double y2) {
+return Math.sqrt(Math.pow((x2 - x1), 2) + Math.pow((y2 - y1), 2));
+}
+
+public static double slope(double x1, double y1, double x2, double y2) {
+return ((y2 - y1) / ((x2 + 0.000001) - x1));
+}
+
+public static double tangent(double m1, double m2) {
+double m = (m2 - m1) / (1 + (m2 * m1));
+double theta_rad = (Math.atan(m));
+double theta = Math.abs(Math.toDegrees(theta_rad));
+return theta;
+}
+
+public static double tangent_single(double m) {
+double theta_rad = (Math.atan(m));
+double theta = Math.abs(Math.toDegrees(theta_rad));
+return theta;
+}
+
+public static int color(float[] rgb) {
+rgb = new float[] { ((int) (rgb[0] * 255)), ((int) (rgb[1] * 255)), ((int) (rgb[2] * 255)) };
+// WHITE
+if (isRGBLimit(rgb, new double[] { 81.7, 8, 92.2, 12, 149.2, 15 })) {
+return 1;
+}
+// NOT WHITE
+else {
+return 0;
+}
+}
+
+public static boolean isRGBLimit(float[] rgb, double[] valdev) {
+if (isBetween(rgb[0], valdev[0], valdev[1]) && isBetween(rgb[1], valdev[2], valdev[3])
+&& isBetween(rgb[2], valdev[4], valdev[5])) {
+return true;
+}
+return false;
+}
+
+public static boolean isBetween(double val1, double val2, double dev) {
+if (val1 <= (val2 + dev) && val1 >= (val2 - dev)) {
+return true;
+}
+return false;
+}
+}
